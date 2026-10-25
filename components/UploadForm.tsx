@@ -19,8 +19,19 @@ import {checkBookExists, createBook, saveBookSegments} from "@/lib/actions/book.
 import {useRouter} from "next/navigation";
 import {parsePDFFile} from "@/lib/utils";
 import {upload} from "@vercel/blob/client";
+import Image from "next/image";
+import { Sparkles } from "lucide-react";
 
-const UploadForm = () => {
+interface UploadFormProps {
+    prefilled?: {
+        title?: string;
+        author?: string;
+        coverURL?: string;
+        persona?: string;
+    };
+}
+
+const UploadForm = ({ prefilled }: UploadFormProps = {}) => {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isMounted, setIsMounted] = useState(false);
     const { userId } = useAuth();
@@ -33,9 +44,9 @@ const UploadForm = () => {
     const form = useForm<BookUploadFormValues>({
         resolver: zodResolver(UploadSchema),
         defaultValues: {
-            title: '',
-            author: '',
-            persona: '',
+            title: prefilled?.title || '',
+            author: prefilled?.author || '',
+            persona: prefilled?.persona || DEFAULT_VOICE,
             pdfFile: undefined,
             coverImage: undefined,
         },
@@ -47,8 +58,6 @@ const UploadForm = () => {
         }
 
         setIsSubmitting(true);
-
-        // PostHog -> Track Book Uploads...
 
         try {
             const existsCheck = await checkBookExists(data.title);
@@ -86,6 +95,23 @@ const UploadForm = () => {
                     contentType: coverFile.type
                 });
                 coverUrl = uploadedCoverBlob.url;
+            } else if (prefilled?.coverURL) {
+                try {
+                    const response = await fetch(prefilled.coverURL);
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const uploadedCoverBlob = await upload(`${fileTitle}_cover.jpg`, blob, {
+                            access: 'public',
+                            handleUploadUrl: '/api/upload',
+                            contentType: 'image/jpeg'
+                        });
+                        coverUrl = uploadedCoverBlob.url;
+                    } else {
+                        coverUrl = prefilled.coverURL;
+                    }
+                } catch {
+                    coverUrl = prefilled.coverURL;
+                }
             } else {
                 const response = await fetch(parsedPDF.cover)
                 const blob = await response.blob();
@@ -131,8 +157,10 @@ const UploadForm = () => {
                 throw new Error("Failed to save book segments");
             }
 
+            toast.success(`"${data.title}" added to your library!`);
             form.reset();
-            router.push('/');
+            // Navigate directly to the voice assistant room!
+            router.push(`/books/${book.data.slug}`);
         } catch (error) {
             console.error(error);
 
@@ -149,6 +177,31 @@ const UploadForm = () => {
             {isSubmitting && <LoadingOverlay />}
 
             <div className="new-book-wrapper">
+                {prefilled?.title && (
+                    <div className="bg-[#fff6e5] border border-[#8B7355]/30 rounded-2xl p-4 mb-8 flex items-center gap-4 shadow-sm">
+                        {prefilled.coverURL && (
+                            <div className="relative w-14 h-20 rounded-lg overflow-hidden shadow-md border border-[#8B7355]/20 shrink-0">
+                                <Image
+                                    src={prefilled.coverURL}
+                                    alt={prefilled.title}
+                                    fill
+                                    className="object-cover"
+                                />
+                            </div>
+                        )}
+                        <div>
+                            <div className="flex items-center gap-1.5 text-[#8B7355] text-[10px] font-bold uppercase tracking-wider mb-0.5">
+                                <Sparkles className="size-3" />
+                                <span>Pre-selected from World Catalog</span>
+                            </div>
+                            <h3 className="font-serif font-bold text-lg text-[#212a3b]">{prefilled.title}</h3>
+                            <p className="text-xs text-[#3d485e]">
+                                By {prefilled.author} • Title, author & artwork are locked in. Just drop your PDF below!
+                            </p>
+                        </div>
+                    </div>
+                )}
+
                 <Form {...form}>
                     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
                         {/* 1. PDF File Upload */}

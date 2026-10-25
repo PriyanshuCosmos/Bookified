@@ -2,15 +2,110 @@
 
 import {CreateBook, TextSegment} from "@/types";
 import {connectToDatabase} from "@/database/mongoose";
-import {escapeRegex, generateSlug, serializeData} from "@/lib/utils";
+import {escapeRegex, generateSlug, serializeData, splitIntoSegments} from "@/lib/utils";
 import Book from "@/database/models/book.model";
 import BookSegment from "@/database/models/book-segment.model";
 import mongoose from "mongoose";
 import {getUserPlan} from "@/lib/subscription.server";
+import { curatedWorldBooks } from "@/lib/constants";
+import { getCuratedBookContent } from "@/lib/curated-books-content";
+
+export const provisionCuratedBook = async (slug: string, persona: string = 'rachel') => {
+    try {
+        await connectToDatabase();
+
+        // 1. Check if book already exists in DB
+        const existing = await Book.findOne({ slug }).lean();
+        if (existing) {
+            return {
+                success: true,
+                data: serializeData(existing),
+            };
+        }
+
+        // 2. Find curated metadata
+        const metadata = curatedWorldBooks.find((b) => b.slug === slug);
+        if (!metadata) {
+            return { success: false, error: 'Curated book not found' };
+        }
+
+        // Determine user ID if authenticated
+        let currentUserId = 'system_curated';
+        try {
+            const { auth } = await import('@clerk/nextjs/server');
+            const { userId } = await auth();
+            if (userId) currentUserId = userId;
+        } catch {
+            // Unauthenticated or background seeding
+        }
+
+        // 3. Create Book in MongoDB
+        const newBook = await Book.create({
+            clerkId: currentUserId,
+            title: metadata.title,
+            author: metadata.author,
+            slug: metadata.slug,
+            persona: persona || 'rachel',
+            coverURL: metadata.coverURL,
+            fileURL: metadata.coverURL,
+            fileBlobKey: `curated_${metadata.slug}`,
+            fileSize: 1024 * 512,
+            totalSegments: 0,
+        });
+
+        // 4. Split full detailed content into text segments
+        const fullContent = getCuratedBookContent(metadata.slug);
+        const textSegments = splitIntoSegments(fullContent, 350, 40);
+
+        // 5. Save segments for Vapi search
+        const segmentDocs = textSegments.map((segment) => ({
+            bookId: newBook._id,
+            clerkId: currentUserId,
+            content: segment.text,
+            segmentIndex: segment.segmentIndex,
+            pageNumber: segment.segmentIndex + 1,
+            wordCount: segment.wordCount,
+        }));
+
+        await BookSegment.insertMany(segmentDocs);
+        await Book.findByIdAndUpdate(newBook._id, { totalSegments: textSegments.length });
+
+        return {
+            success: true,
+            data: serializeData(newBook),
+        };
+    } catch (e: unknown) {
+        const err = e as { code?: number; message?: string };
+        if (err?.code === 11000 || err?.message?.includes('E11000')) {
+            const existing = await Book.findOne({ slug }).lean();
+            if (existing) {
+                return { success: true, data: serializeData(existing) };
+            }
+        }
+        console.error('Error provisioning curated book', e);
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+};
 
 export const getAllBooks = async (search?: string) => {
     try {
         await connectToDatabase();
+
+        // Auto-seed initial top curated books if database is empty
+        const count = await Book.countDocuments();
+        if (count === 0 && !search) {
+            const initialSlugs = [
+                'atomic-habits',
+                'the-psychology-of-money',
+                'clean-code',
+                'deep-work',
+                '1984',
+                'rich-dad-poor-dad',
+            ];
+            for (const s of initialSlugs) {
+                await provisionCuratedBook(s, 'rachel');
+            }
+        }
 
         let query = {};
 

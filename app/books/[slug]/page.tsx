@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, MicOff, Mic } from "lucide-react";
 
-import { getBookBySlug } from "@/lib/actions/book.actions";
+import { getBookBySlug, provisionCuratedBook } from "@/lib/actions/book.actions";
 import VapiControls from "@/components/VapiControls";
 
 export default async function BookDetailsPage({
@@ -19,10 +19,16 @@ export default async function BookDetailsPage({
   }
 
   const { slug } = await params;
-  const result = await getBookBySlug(slug);
+  let result = await getBookBySlug(slug);
 
   if (!result.success || !result.data) {
-    redirect("/");
+    // Auto-provision on the fly if it is a curated book
+    const provisionResult = await provisionCuratedBook(slug);
+    if (provisionResult.success && provisionResult.data) {
+      result = provisionResult;
+    } else {
+      redirect("/");
+    }
   }
 
   const book = result.data;
